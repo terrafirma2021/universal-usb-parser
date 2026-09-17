@@ -1,0 +1,19 @@
+# Build artifacts
+*.exe
+*.obj
+*.pdb
+*.ilk
+
+# Output dumps and extractions
+*.json
+*.txt
+*.zip
+*.rar
+
+# Visual Studio / IDE
+.vs/
+*.sln
+*.vcxproj*
+x64/
+Debug/
+Release/
