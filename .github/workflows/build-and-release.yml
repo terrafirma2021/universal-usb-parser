@@ -43,24 +43,18 @@ jobs:
             universal-usb-parser-windows.zip
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-        with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}
-          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'Universal USB Parser (Latest)' }}
-          body: |
-            ## Universal USB Parser (Automated Build)
-
-            Standalone Win32 portable executable for Windows 10 and 11.
-            Zero Python or external runtime dependencies.
-
-            ### Included Binaries:
-            - `universal_usb_parser.exe`
-            - `universal-usb-parser-windows.zip`
-          files: |
-            universal_usb_parser.exe
-            universal-usb-parser-windows.zip
-          draft: false
-          prerelease: false
+        shell: pwsh
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = if ($env:GITHUB_REF -like "refs/tags/*") { $env:GITHUB_REF_NAME } else { "latest" }
+          if ($tag -eq "latest") {
+            gh release delete latest --yes 2>$null
+            git tag -d latest 2>$null
+            git push origin :refs/tags/latest 2>$null
+          }
+          gh release create $tag universal_usb_parser.exe universal-usb-parser-windows.zip `
+            --title "Universal USB Parser ($tag)" `
+            --notes "## Universal USB Parser`n`nStandalone Win32 portable executable for Windows 10 and 11.`nZero Python or external runtime dependencies.`n`n### Assets:`n- universal_usb_parser.exe`n- universal-usb-parser-windows.zip"
+
