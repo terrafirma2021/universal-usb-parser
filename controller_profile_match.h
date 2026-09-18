@@ -3,18 +3,23 @@
 struct ControllerProfileMatch {
     bool matched = false;
     std::string status = "no_profile";
+    std::string selection_basis;
     std::vector<std::string> reasons;
 };
 
-static bool sony_profile_structure(const InterfaceExtraction& row, std::vector<std::string>& reasons) {
-    if (row.protocol.name.find("dual") != 0) return true;
-    if (!row.parsed.available || !row.parsed.errors.empty()) {
+static bool sony_profile_structure(const ParsedDescriptorResult& parsed, const std::string& family,
+                                   std::vector<std::string>& reasons) {
+    const bool ds3 = family == "dualshock3_usb";
+    const bool ds4 = family == "dualshock4_usb";
+    if (!ds3 && !ds4 && family != "dualsense_usb") {
+        reasons.push_back("Unknown Sony-compatible Input layout family");
+        return false;
+    }
+    if (!parsed.available || !parsed.errors.empty()) {
         reasons.push_back("A parsed HID Input layout is required to bind Sony semantic offsets");
         return false;
     }
-    const bool ds3 = row.protocol.name == "dualshock3_usb";
-    const bool ds4 = row.protocol.name == "dualshock4_usb";
-    const auto* report = descriptor_report_by_id(&row.parsed, 1);
+    const auto* report = descriptor_report_by_id(&parsed, 1);
     if (!report || report->input_wire_bytes != (ds3 ? 49u : 64u)) {
         reasons.push_back("Sony Input report 1 has an absent or incompatible wire length");
         return false;
@@ -32,7 +37,7 @@ static bool sony_profile_structure(const InterfaceExtraction& row, std::vector<s
         return false;
     }
     const int root = *roots.begin();
-    const bool controller = std::any_of(row.parsed.collections.begin(), row.parsed.collections.end(), [&](const ParsedCollection& c) {
+    const bool controller = std::any_of(parsed.collections.begin(), parsed.collections.end(), [&](const ParsedCollection& c) {
         return c.ordinal == root && !c.parent_ordinal && c.usage_page == 1 && (c.usage == 4 || c.usage == 5);
     });
     if (!controller) {
@@ -84,22 +89,19 @@ static ControllerProfileMatch controller_profile_match(const InterfaceExtraction
     const bool gip = profile.name == "xbox_gip";
     const bool xusb = profile.name == "xbox_xusb";
     const bool wireless = profile.name == "xbox_360_wireless";
-    const bool sony = profile.name.find("dual") == 0;
+    const bool sony = profile.name == "dualshock3_usb" || profile.name == "dualshock4_usb" || profile.name == "dualsense_usb";
     if (gip || xusb || wireless) {
+        result.selection_basis = "usb_interface_signature";
         if (row.descriptor.interface_class != 0xff || row.descriptor.interface_subclass != (gip ? 0x47 : 0x5d) ||
             row.descriptor.interface_protocol != (gip ? 0xd0 : wireless ? 0x81 : 1)) reject("The physical interface signature contradicts the Xbox transport");
         if (gip && row.descriptor.interface_number != 0) reject("GIP data profiles require interface 0");
         if (row.physical_hid) reject("A proprietary Xbox data interface cannot be treated as HID");
     } else if (sony) {
-        if (profile.source_vid != 0x054c || !row.physical_hid || row.descriptor.interface_class != 3 ||
+        result.selection_basis = "parsed_hid_input_layout";
+        if (!row.physical_hid || row.descriptor.interface_class != 3 ||
             row.descriptor.interface_subclass != 0 || row.descriptor.interface_protocol != 0)
             reject("Sony USB semantics require a matching non-boot physical HID interface");
-        const bool identity = (profile.name == "dualshock3_usb" && profile.source_pid == 0x0268) ||
-            (profile.name == "dualshock4_usb" && (profile.source_pid == 0x05c4 || profile.source_pid == 0x09cc)) ||
-            (profile.name == "dualsense_usb" && profile.source_pid == 0x0ce6) ||
-            (profile.name == "dualsense_edge_usb" && profile.source_pid == 0x0df2);
-        if (!identity) reject("The Sony family/variant does not match its candidate identity");
-        sony_profile_structure(row, result.reasons);
+        sony_profile_structure(row.parsed, profile.name, result.reasons);
         if (row.using_ppd) {
             bool validated = false;
             for (const auto& report : row.ppd.report_states)

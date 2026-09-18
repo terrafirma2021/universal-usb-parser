@@ -2048,7 +2048,11 @@ static const ParsedReport* descriptor_report_by_id(const ParsedDescriptorResult*
     return nullptr;
 }
 
-static ProtocolProfile protocol_for_interface(uint16_t vid, uint16_t pid, const InterfaceDesc& iface) {
+static bool sony_profile_structure(const ParsedDescriptorResult& parsed, const std::string& family,
+                                   std::vector<std::string>& reasons);
+
+static ProtocolProfile protocol_for_interface(uint16_t vid, uint16_t pid, const InterfaceDesc& iface,
+                                               const ParsedDescriptorResult* parsed = nullptr) {
     ProtocolProfile profile;
     profile.source_vid = vid;
     profile.source_pid = pid;
@@ -2097,12 +2101,24 @@ static ProtocolProfile protocol_for_interface(uint16_t vid, uint16_t pid, const 
         }
         return profile;
     }
-    if (vid != 0x054C || iface.interface_class != 3) return profile;
-    bool ds3 = pid == 0x0268;
-    bool ds4 = pid == 0x05C4 || pid == 0x09CC;
-    bool ds5 = pid == 0x0CE6 || pid == 0x0DF2;
-    if (!ds3 && !ds4 && !ds5) return profile;
-    profile.name = ds3 ? "dualshock3_usb" : ds4 ? "dualshock4_usb" : pid == 0x0DF2 ? "dualsense_edge_usb" : "dualsense_usb";
+    if (iface.interface_class != 3 || iface.interface_subclass != 0 || iface.interface_protocol != 0 || !parsed)
+        return profile;
+    std::string family;
+    for (const char* candidate : {"dualshock3_usb", "dualshock4_usb", "dualsense_usb"}) {
+        std::vector<std::string> reasons;
+        if (!sony_profile_structure(*parsed, candidate, reasons)) continue;
+        if (!family.empty()) {
+            profile.notes.push_back("The parsed HID Input layout matches multiple protocol families; retain the generic HID layout.");
+            return profile;
+        }
+        family = candidate;
+    }
+    if (family.empty()) return profile;
+    const bool ds3 = family == "dualshock3_usb";
+    const bool ds4 = family == "dualshock4_usb";
+    const bool ds5 = family == "dualsense_usb";
+    profile.name = family;
+    profile.notes.push_back("Protocol family selected from the parsed HID Input layout. VID/PID record the device identity and do not select or restrict the family.");
     profile.sources = {ds3 ? "https://github.com/libsdl-org/SDL/blob/main/src/joystick/hidapi/SDL_hidapi_ps3.c" :
         "https://github.com/torvalds/linux/blob/v6.12/drivers/hid/hid-playstation.c"};
     if (ds5) {
@@ -2112,7 +2128,7 @@ static ProtocolProfile protocol_for_interface(uint16_t vid, uint16_t pid, const 
         profile.notes.push_back("Report 2 descriptor Output length and the known 63-byte USB transport form are separate. Output effects and Feature semantics remain undecoded and must be preserved.");
         profile.output_reports.push_back({2,63});
     } else profile.notes.push_back("USB report 1 mapping; Bluetooth packets use different envelopes. Raw HID layouts remain authoritative for additional fields.");
-    if (pid == 0x0DF2) profile.notes.push_back("Common DualSense input fields are mapped; Edge-specific controls remain raw until a variant layout is proven.");
+    if (ds5) profile.notes.push_back("This common DualSense-compatible layout does not identify a manufacturer or distinguish an Edge variant. Variant-specific controls remain raw until their layout is proven.");
     ProtocolReport report;
     report.report_id = 1;
     report.header_bytes = 1;
@@ -2385,7 +2401,7 @@ static void write_protocol_json(std::ostream& out, const ProtocolProfile& profil
                                 const ParsedDescriptorResult* descriptor = nullptr) {
     if (profile.name.empty()) { out << "null"; return; }
     const bool gip = profile.name == "xbox_gip";
-    const bool dualsense = profile.name == "dualsense_usb" || profile.name == "dualsense_edge_usb";
+    const bool dualsense = profile.name == "dualsense_usb";
     out << '{';
     write_layout_evidence_json(out, evidence);
     out << ",\"definition_source\":\"known_protocol_definition\",\"definition_authority\":\"protocol_semantics\""
@@ -2618,13 +2634,8 @@ static void populate_hid_layout(InterfaceExtraction& row, const std::vector<Wind
             row.parsed.collections.push_back(c);
         }
     }
-    if (row.protocol.name.find("dual") == 0 && !row.protocol.reports.empty()) {
-        std::vector<std::string> reasons;
-        if (!sony_profile_structure(row,reasons)) {
-            row.protocol.notes.insert(row.protocol.notes.end(),reasons.begin(),reasons.end());
-            row.protocol.reports.clear();
-        }
-    }
+    if (row.physical_hid && row.descriptor.alternate_setting == 0)
+        row.protocol = protocol_for_interface(row.physical_vid, row.physical_pid, row.descriptor, &row.parsed);
 }
 
 static bool physical_layout_candidate(const InterfaceExtraction& row) {
@@ -2902,8 +2913,10 @@ static void write_interface_json(std::ostream& out, const InterfaceExtraction& r
     const auto profile_match = controller_profile_match(row);
     out << "    {";
     write_layout_evidence_json(out, interface_layout_evidence(row, windows));
-    out << ",\"controller_profile_match\":{\"policy\":\"usb-controller-match-v1\",\"candidate\":"
+    out << ",\"controller_profile_match\":{\"policy\":\"usb-controller-match-v2\",\"candidate\":"
         << (row.protocol.name.empty() ? "null" : json_string(row.protocol.name))
+        << ",\"selection_basis\":" << (profile_match.selection_basis.empty() ? "null" : json_string(profile_match.selection_basis))
+        << ",\"vid_pid_used_for_family_selection\":false"
         << ",\"status\":" << json_string(profile_match.status) << ",\"definition_matches\":" << (profile_match.matched ? "true" : "false")
         << ",\"physical_binding_verified\":" << (physical_protocol_layout(row) ? "true" : "false")
         << ",\"device_authentication_verified\":false,\"reasons\":";
@@ -3147,6 +3160,7 @@ static void write_interface_txt(std::ostream& out, const InterfaceExtraction& ro
     const auto profile_match = controller_profile_match(row);
     if (!row.protocol.name.empty()) {
         out << "Controller profile candidate: " << row.protocol.name << "; match: " << profile_match.status
+            << "; selection basis: " << profile_match.selection_basis << "; VID/PID family restriction: none"
             << "; physical binding verified: " << (physical_protocol_layout(row) ? "yes" : "no")
             << "; device authentication verified: no\n";
         for (const auto& reason : profile_match.reasons) out << "  Profile match: " << reason << '\n';
@@ -3162,7 +3176,7 @@ static void write_interface_txt(std::ostream& out, const InterfaceExtraction& ro
         for (const auto& report : row.protocol.reports) {
             out << "  Selector: " << report.selector << "; minimum wire bytes: " << report.minimum_wire_bytes
                 << "; payload starts at byte: " << report.header_bytes << '\n';
-            if (row.protocol.name == "dualsense_usb" || row.protocol.name == "dualsense_edge_usb")
+            if (row.protocol.name == "dualsense_usb")
                 out << "    Basic input semantics complete: " << (report.basic_input_semantics_complete ? "yes" : "no")
                     << "; extended input semantics complete: " << (report.extended_input_semantics_complete ? "yes" : "no") << '\n';
             if (report.gip_length)

@@ -15,11 +15,12 @@ The tool reads USB descriptors and Windows HID information. It does **not** reco
 | Generic HID gamepad, joystick, or composite device | Declared buttons, axes, hats, collections, and separate Input/Output/Feature reports | Generic usages alone do not identify left/right sticks, triggers, or platform button names |
 | Windows raw HID preparsed data (PPD) | Recovered collection hierarchy, packed fields, selector arrays, aliases and repeated values through the same semantic model | Supported PPD representation only; physical eligibility requires separate live identity, framing and per-report validation |
 | Xbox GIP, XUSB, and Xbox 360 wireless receiver | Known input selectors, normalized buttons, triggers, and sticks | GIP framing/reassembly is a consumer responsibility; variant extensions remain preserved |
-| DualShock 3 and DualShock 4 USB | Known basic controller input fields | Additional unmodeled data stays in the raw layout |
-| DualSense USB `054C:0CE6` | Basic controls plus sequence, native PlayStation names, raw motion sensors, timestamp, both touch contacts, and known battery/audio status fields | The common USB input semantic layer is implemented; Output/Feature semantics and unknown extensions remain separate |
-| DualSense Edge USB `054C:0DF2` | The common DualSense USB input fields | Edge-specific controls remain raw; dedicated Edge hardware validation is not claimed |
+| DualShock 3-compatible and DualShock 4-compatible USB controllers | Known basic controller input fields when the parsed Input layout matches | Includes third-party VID/PID identities; additional unmodeled data stays in the raw layout |
+| DualSense-compatible USB controllers, including matching Edge and third-party layouts | Basic controls plus sequence, native PlayStation names, raw motion sensors, timestamp, both touch contacts, and known battery/audio status fields | Selected by parsed Input layout, without a VID/PID allowlist. The common layout does not identify the manufacturer or Edge variant; variant-specific controls, Output/Feature semantics and unknown extensions remain separate |
 
 Support here means the listed interpretation is implemented. It does not guarantee that Windows will expose an exact descriptor for every device or that every device-specific extension is understood. All related interface layouts are exported with their own evidence and readiness flags.
+
+VID/PID identifies the device to extract; it does not choose its controller protocol. Sony-compatible families are recognized from the parsed HID Input report, and Xbox families from their USB interface signatures. A third-party controller can use a Sony-compatible layout under its own VID/PID. When no unique compatible family is established, the export retains the generic descriptor-derived fields instead of assigning a protocol from the device name or IDs.
 
 ## Quick start
 
@@ -76,7 +77,7 @@ Windows buffer lengths are maxima for a collection and report type. A shorter re
 
 The evidence order is **known protocol bound to a physical interface → exact physical HID descriptor → physically correlated reconstruction**. Windows logical HID views remain diagnostic and cannot override the physical layout. For example, Xbox `045E:02FF` can be a Windows child of physical `045E:0B12`; use the physical GIP layout for USB packet parsing.
 
-For the verified standard DualSense USB extraction, interface **3 / alternate 0** selects `dualsense_usb` at priority **1**. Basic and common extended input semantics are complete within the documented scope. The selected Input report is **64 bytes including Report ID `0x01`**. Exact descriptor fields, all other Report IDs, and reserved bits remain available alongside that semantic layer.
+For a matching DualSense-compatible USB layout, the resolved physical interface selects `dualsense_usb` at priority **1**, regardless of VID/PID. Basic and common extended input semantics are complete within the documented scope. The selected Input report is **64 bytes including Report ID `0x01`**. Exact descriptor fields, all other Report IDs, and reserved bits remain available alongside that semantic layer.
 
 Readiness does not require every sensor or output effect to be modeled. `basic_input_semantics_complete`, `extended_input_semantics_complete`, and `output_semantics_complete` describe different scopes. Downstream firmware must preserve uninterpreted data, implement any required transport handling, and validate its generated parser and injection behavior on hardware.
 
@@ -179,7 +180,7 @@ This additive schema-v4 metadata distinguishes physical USB layouts, operating-s
 | Evidence | `layout_source` | `authority` | Selection priority |
 | --- | --- | --- | --- |
 | Physical proprietary input transport | `physical_usb_protocol` | `physical_wire` | 1 |
-| Known VID/PID protocol definition bound to a matching physical input interface | `known_protocol_definition` | `protocol_semantics` | 1 |
+| Known protocol definition selected by parsed Input layout or USB transport signature and bound to a matching physical interface | `known_protocol_definition` | `protocol_semantics` | 1 |
 | Physical HID report descriptor | `physical_hid_report_descriptor` | `physical_wire` | 2 |
 | Reconstructed HID layout tied to a physical HID interface | `windows_hid_stack` | `physical_wire_reconstruction` | 3 |
 | Validated raw PPD tied to a physical HID interface | `windows_preparsed_data` | `physical_wire_reconstruction` | 3 |
@@ -202,15 +203,15 @@ For example, a Windows logical 16-bit axis with `logical_min: 0` and `logical_ma
 | Xbox GIP | `FF/47/D0` interface signature with an interrupt IN endpoint; input-state and virtual-key selectors, buttons, triggers, and four signed stick axes |
 | Xbox XUSB | `FF/5D/01`; 20-byte state packet selector and normalized buttons, triggers, and sticks |
 | Xbox 360 wireless receiver | `FF/5D/81`; receiver envelope and nested state packet selectors |
-| DualShock 3 | Sony `054C:0268`; USB report 1 core controls |
-| DualShock 4 | Sony `054C:05C4` / `054C:09CC`; USB report 1 controls and D-pad hat |
-| DualSense / Edge | Sony `054C:0CE6` / `054C:0DF2`; common USB report 1 controls, native button names, sequence, signed motion sensors, timestamp, packed touch contacts and battery/status codes |
+| DualShock 3-compatible USB | Parsed report 1 with matching 49-byte framing, controller collection, axes and buttons; core controls |
+| DualShock 4-compatible USB | Parsed report 1 with matching 64-byte framing, controller collection, axes, triggers, button positions and D-pad hat |
+| DualSense-compatible USB | Parsed report 1 with matching 64-byte framing and DualSense control structure; common controls, native button names, sequence, signed motion sensors, timestamp, packed touch contacts and battery/status codes |
 
 Each protocol report exports selector byte masks, minimum/exact lengths, header length, wire/payload offsets, logical ranges, normalized roles with `known_protocol` confidence, and uninterpreted regions/tails that must be preserved. HID usages are `null` for protocol-specific fields rather than fabricated. Sony HID descriptor layouts remain available separately; incompatible Input framing or control structure withholds the normalized profile.
 
-`controller_profile_match` explains every candidate's match or rejection in JSON; TXT includes the same decision and reasons. Known Sony families require the correct VID/PID variant, non-boot physical HID interface, one interrupt IN/OUT pair, compatible endpoint capacities, and one controller collection with the expected report ID, length, axes, triggers, hat, button positions and ranges. This prevents equal-length DS4 and DualSense reports from being confused. PPD-backed Sony matching additionally requires complete, exact-length, report-specific Windows Input validation. Unrelated Feature layout changes do not prevent common Input matching.
+`controller_profile_match` explains the candidate's match or rejection in JSON; TXT includes the same decision and reasons. Its `selection_basis` is `parsed_hid_input_layout` for Sony-compatible families or `usb_interface_signature` for Xbox families; `vid_pid_used_for_family_selection` is always false. Sony-compatible candidates are selected after parsing the HID Input layout, with exactly one matching family required. Physical binding requires a non-boot HID interface, one interrupt IN/OUT pair, compatible endpoint capacities, and one controller collection with the expected report ID, length, axes, triggers, hat, button positions and ranges. This prevents equal-length DS4 and DualSense reports from being confused. PPD-backed matching additionally requires complete, exact-length, report-specific Windows Input validation. Unrelated Feature layout changes do not prevent common Input matching.
 
-GIP and XUSB require their corresponding vendor-interface class/subclass/protocol and interrupt endpoint topology. GIP controller data is restricted to interface 0; auxiliary audio/bulk interfaces and unsupported alternate settings are rejected. Verified third-party Xbox transport signatures remain supported without a Microsoft-only VID restriction. Unknown Sony identities keep their generic HID evidence without acquiring a guessed Sony profile. Logical Windows children and offline imports cannot obtain physical binding. These checks establish compatibility with a known profile, not device authentication; `device_authentication_verified` remains false.
+GIP and XUSB require their corresponding vendor-interface class/subclass/protocol and interrupt endpoint topology. GIP controller data is restricted to interface 0; auxiliary audio/bulk interfaces and unsupported alternate settings are rejected. Third-party identities are eligible for all supported families when their actual layout and transport satisfy the corresponding checks. VID/PID values remain attached to the actual device for identity correlation, without a manufacturer or product allowlist. A common DualSense-compatible Input layout exports `dualsense_usb`, including matching Edge layouts; no Edge-specific identity or controls are inferred from PID. Logical Windows children and offline imports cannot obtain physical binding. These checks establish compatibility with a known profile, not device authentication; `device_authentication_verified` remains false.
 
 GIP fixed wire offsets apply only to the exported unchunked, single-length-byte selector. Its payload-length condition must also pass. Extended headers and chunked packets require protocol decoding/reassembly before applying payload offsets. Audio/bulk auxiliary interfaces do not receive the interrupt gamepad state layout. Variant-specific Share, Elite paddle, and Edge extensions are not guessed; unmapped bytes remain opaque. These profiles describe known input fields, not a complete implementation of controller authentication, initialization, output effects, calibrated sensor processing, or every firmware-specific extension.
 
@@ -228,7 +229,7 @@ Uninterpreted regions and `unknown_extensions` carry `semantic_type: "unknown_pr
 
 ## DualSense USB semantic fields
 
-For `054C:0CE6`, the existing physical interface 3 selection stays authoritative at priority 1. The Input selector remains Report ID `0x01`, exactly 64 wire bytes, with a one-byte Report ID header. `protocol_layout.reports[].fields` contains the known semantics; interface `reports`, `collections`, and `raw_report_descriptor` retain the original descriptor interpretation and exact physical bytes. The semantic overlay does not rewrite vendor-defined descriptor fields, combine Report IDs, or replace Windows diagnostic evidence.
+For a matching parsed DualSense-compatible Input layout, the resolved physical interface is selected at priority 1. Neither VID/PID nor a fixed interface number selects this family. The Input selector remains Report ID `0x01`, exactly 64 wire bytes, with a one-byte Report ID header. `protocol_layout.reports[].fields` contains the known semantics; interface `reports`, `collections`, and `raw_report_descriptor` retain the original descriptor interpretation and exact physical bytes. The semantic overlay does not rewrite vendor-defined descriptor fields, combine Report IDs, or replace Windows diagnostic evidence.
 
 Normalized button roles retain their existing names and add `native_name`: `button_west/south/east/north` map to `square/cross/circle/triangle`; shoulders and trigger buttons map to `l1/r1/l2_button/r2_button`; `view/menu` map to `create/options`; stick clicks map to `l3/r3`; and `guide` maps to `ps_home`. Touchpad click and microphone mute preserve both names.
 
