@@ -1,6 +1,11 @@
 @echo off
-setlocal enabledelayedexpansion
+setlocal
 cd /d "%~dp0"
+
+if not "%~1"=="" (
+    echo Usage: build.cmd
+    exit /b 5
+)
 
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if not exist "%VSWHERE%" (
@@ -23,13 +28,14 @@ if errorlevel 1 (
     exit /b 4
 )
 
-cl /nologo /std:c++17 /O2 /EHsc /W3 /DWIN32_LEAN_AND_MEAN makcu_hid_extractor.cpp /Fe:universal_usb_parser.exe /link /OPT:REF /OPT:ICF
+cl /nologo /std:c++17 /O2 /EHsc /W3 /WX /MT /DWIN32_LEAN_AND_MEAN makcu_hid_extractor.cpp /Fe:universal_usb_parser.exe /link /OPT:REF /OPT:ICF
 if errorlevel 1 (
     echo Compilation failed.
     exit /b %errorlevel%
 )
 
 copy /y universal_usb_parser.exe makcu_hid_extractor.exe >nul
+if errorlevel 1 exit /b %errorlevel%
 if exist makcu_hid_extractor.obj del makcu_hid_extractor.obj
 echo Successfully built universal_usb_parser.exe
 exit /b 0

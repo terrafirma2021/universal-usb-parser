@@ -1,14 +1,40 @@
 # Build artifacts
 *.exe
 *.obj
+*.o
 *.pdb
 *.ilk
+*.dll
+*.lib
+*.exp
+*.pch
+*.bin
 
 # Output dumps and extractions
 *.json
 *.txt
+!LICENSES/*.txt
 *.zip
 *.rar
+*.7z
+*.ppd
+*.hid
+*.observed
+*.dmp
+*.pcap
+*.pcapng
+*.log
+
+# Local tests, fixtures, captures, and verification snapshots
+tests/
+fixtures/
+captures/
+_baseline/
+_test_output/
+_verification*/
+_runtime_regression/
+_hid_fallback_regression/
+VALIDATION.md
 
 # Visual Studio / IDE
 .vs/
